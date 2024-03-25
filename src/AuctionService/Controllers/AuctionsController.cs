@@ -3,6 +3,8 @@ using AuctionService.DTOs;
 using AuctionService.Entities;
 using AutoMapper;
 using AutoMapper.QueryableExtensions;
+using Contracts;
+using MassTransit;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,10 +12,12 @@ namespace AuctionService.Controllers;
 
 [ApiController]
 [Route("api/auctions")]
-public class AuctionsController(AuctionDbContext context, IMapper mapper) : ControllerBase
+public class AuctionsController(AuctionDbContext context, IMapper mapper, IPublishEndpoint publishEndpoint) : ControllerBase
 {
     private readonly AuctionDbContext _context = context;
     private readonly IMapper _mapper = mapper;
+
+    private readonly IPublishEndpoint _publishEndpoint = publishEndpoint;
 
     [HttpGet]
     public async Task<ActionResult<List<AuctionDto>>> GetAllAuctions(string date)
@@ -37,7 +41,7 @@ public class AuctionsController(AuctionDbContext context, IMapper mapper) : Cont
 
         if (auction == null) return NotFound();
 
-        return _mapper.Map<AuctionDto>(auction);   
+        return _mapper.Map<AuctionDto>(auction);
     }
 
     [HttpPost]
@@ -47,11 +51,16 @@ public class AuctionsController(AuctionDbContext context, IMapper mapper) : Cont
         //TODO: add current user as seller
         auction.Seller = "John Doe";
         _context.Auctions.Add(auction);
+
+        var newAuction = _mapper.Map<AuctionDto>(auction);
+
+        await _publishEndpoint.Publish(_mapper.Map<AuctionCreated>(newAuction));
+
         var result = await _context.SaveChangesAsync() > 0;
 
-        if(!result) return BadRequest("Failed to create auction");
+        if (!result) return BadRequest("Failed to create auction");
 
-        return CreatedAtAction(nameof(GetAuctionById), new { id = auction.Id }, _mapper.Map<AuctionDto>(auction));
+        return CreatedAtAction(nameof(GetAuctionById), new { id = auction.Id }, newAuction);
     }
 
     [HttpPut("{id}")]
@@ -70,15 +79,17 @@ public class AuctionsController(AuctionDbContext context, IMapper mapper) : Cont
         auction.Item.Mileage = updateAuctionDto.Mileage ?? auction.Item.Mileage;
         auction.Item.Year = updateAuctionDto.Year ?? auction.Item.Year;
 
-        var result  = await _context.SaveChangesAsync() > 0;
+        await _publishEndpoint.Publish(_mapper.Map<AuctionUpdated>(auction));
 
-        if(result) return Ok();
+        var result = await _context.SaveChangesAsync() > 0;
+
+        if (result) return Ok();
 
         return BadRequest("Failed to update auction");
-    } 
+    }
 
     [HttpDelete("{id}")]
-    public async Task<ActionResult> DeleteAuction(Guid id) 
+    public async Task<ActionResult> DeleteAuction(Guid id)
     {
         var auction = await _context.Auctions.FindAsync(id);
 
@@ -88,9 +99,11 @@ public class AuctionsController(AuctionDbContext context, IMapper mapper) : Cont
 
         _context.Auctions.Remove(auction);
 
+        await _publishEndpoint.Publish<AuctionDeleted>(new { Id = auction.Id.ToString() });
+
         var result = await _context.SaveChangesAsync() > 0;
 
-        if(result) return Ok();
+        if (result) return Ok();
 
         return BadRequest("Failed to delete auction");
     }
